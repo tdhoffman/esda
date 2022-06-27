@@ -192,7 +192,7 @@ class Moran(object):
             self.VI_sim = self.seI_sim ** 2
             self.z_sim = (self.I - self.EI_sim) / self.seI_sim
             if self.z_sim > 0:
-               self.p_z_sim = 1 - stats.norm.cdf(self.z_sim)
+                self.p_z_sim = 1 - stats.norm.cdf(self.z_sim)
             else:
                 self.p_z_sim = stats.norm.cdf(self.z_sim)
 
@@ -567,7 +567,8 @@ def Moran_BV_matrix(variables, w, permutations=0, varnames=None):
         import pandas
 
         if isinstance(variables, pandas.DataFrame):
-            # if yes use variables as df and convert to numpy_array varnames = pandas.Index.tolist(variables.columns)
+            # if yes use variables as df and convert to numpy_array
+            varnames = pandas.Index.tolist(variables.columns)
             variables_n = []
             for var in varnames:
                 variables_n.append(variables[str(var)].values)
@@ -995,7 +996,6 @@ class Moran_Local(object):
 
     def __init__(
         self,
-        y,
         w,
         transformation="r",
         permutations=PERMUTATIONS,
@@ -1005,86 +1005,146 @@ class Moran_Local(object):
         seed=None,
         island_weight=0,
     ):
-        y = np.asarray(y).flatten()
-        self.y = y
-        n = len(y)
+        self.w = w
+        w.transform = transformation
+        self.permutations = permutations
+        self.geoda_quads = geoda_quads
+        self.n_jobs = n_jobs
+        self.keep_simulations = keep_simulations
+        self.seed = seed
+        self.island_weight = island_weight
+
+    def set_params(self, **parameters):
+        for parameter, value in parameters.items():
+            setattr(self, parameter, value)
+        return self
+
+    def get_params(self, deep=True):
+        return {
+            "w": self.w,
+            "permutations": self.permutations,
+            "geoda_quads": self.geoda_quads,
+            "n_jobs": self.n_jobs,
+            "keep_simulations": self.keep_simulations,
+            "seed": self.seed,
+            "island_weight": self.island_weight
+        }
+
+    def fit(self, X):
+        X = np.asarray(X)
+        if X.ndim == 1:  # row vector inputted
+            n = X.shape
+            d = 1
+        else:
+            n, d = X.shape
         self.n = n
         self.n_1 = n - 1
-        z = y - y.mean()
+        self.z = np.zeros((n, d))
+        self.Is = np.zeros((n, d))
+        self.den = np.zeros((d,))
+        self.q = np.zeros((n, d))
+        self.p_sim = np.zeros((n, d))
+        self.sim = np.zeros((n, d))
+        self.rlisas = np.zeros((n, d))
+        self.EI_sim = np.zeros((d,))
+        self.seI_sim = np.zeros((d,))
+        self.VI_sim = np.zeros((d,))
+        self.z_sim = np.zeros((d,))
+        self.p_z_sim = np.zeros((d,))
+        self.EI = np.zeros((d,))
+        self.VI = np.zeros((d,))
+        self.EI = np.zeros((d,))
+        self.VI = np.zeros((d,))
+
+        for col in range(d):  # default is for matrix X
+            z, Is, den, q, p_sim, sim, rlisas, EI_sim, seI_sim, \
+                VI_sim, z_sim, p_z_sim, EIc, VIc, EI, VI = self._fit_1d(X[:, col])
+            self.z[:, col] = z
+            self.Is[:, col] = Is
+            self.den[col] = den
+            self.q[:, col] = q
+            self.p_sim[:, col] = p_sim
+            self.sim[:, col] = sim
+            self.rlisas[:, col] = rlisas
+            self.EI_sim[col] = EI_sim
+            self.seI_sim[col] = seI_sim
+            self.VI_sim[col] = VI_sim
+            self.z_sim[col] = z_sim
+            self.p_z_sim[col] = p_z_sim
+            self.EIc[col] = EIc
+            self.VIc[col] = VIc
+            self.EI[col] = EI
+            self.VI[col] = VI
+
+        return self
+
+    def _fit_1d(self, x):
+        z = x - x.mean()
         # setting for floating point noise
         orig_settings = np.seterr()
         np.seterr(all="ignore")
-        sy = y.std()
-        z /= sy
+        sx = x.std()
+        z /= sx
         np.seterr(**orig_settings)
-        self.z = z
-        w.transform = transformation
-        self.w = w
-        self.permutations = permutations
-        self.den = (z * z).sum()
-        self.Is = self.__calc(self.w, self.z)
-        self.geoda_quads = geoda_quads
-        quads = [1, 2, 3, 4]
-        if geoda_quads:
-            quads = [1, 3, 2, 4]
-        self.quads = quads
-        self.__quads()
-        self.__moments()
-        if permutations:
-            self.p_sim, self.rlisas = _crand_plus(
+        den = (z * z).sum()
+        Is = self.__calc(self.w, z, den)
+        q = self.__quads(z)
+        EIc, VIc, EI, VI = self.__moments(z)
+        if self.permutations:
+            p_sim, rlisas = _crand_plus(
                 z,
-                w,
-                self.Is,
-                permutations,
-                keep_simulations,
-                n_jobs=n_jobs,
+                self.w,
+                Is,
+                self.permutations,
+                self.keep_simulations,
+                n_jobs=self.n_jobs,
                 stat_func=_moran_local_crand,
-                seed=seed,
+                seed=self.seed,
             )
-            self.sim = np.transpose(self.rlisas)
-            if keep_simulations:
-                sim = np.transpose(self.rlisas)
-                above = sim >= self.Is
+            sim = np.transpose(rlisas)
+            if self.keep_simulations:
+                above = sim >= Is
                 larger = above.sum(0)
                 low_extreme = (self.permutations - larger) < larger
                 larger[low_extreme] = self.permutations - larger[low_extreme]
-                self.p_sim = (larger + 1.0) / (permutations + 1.0)
-                self.sim = sim
-                self.EI_sim = self.sim.mean(axis=0)
-                self.seI_sim = self.sim.std(axis=0)
-                self.VI_sim = self.seI_sim * self.seI_sim
-                self.z_sim = (self.Is - self.EI_sim) / self.seI_sim
-                self.p_z_sim = 1 - stats.norm.cdf(np.abs(self.z_sim))
+                p_sim = (larger + 1.0) / (self.permutations + 1.0)
+                EI_sim = sim.mean(axis=0)
+                seI_sim = sim.std(axis=0)
+                VI_sim = seI_sim * seI_sim
+                z_sim = (Is - EI_sim) / seI_sim
+                p_z_sim = 1 - stats.norm.cdf(np.abs(z_sim))
             else:
-                self.sim = self.rlisas = None
-                self.EI_sim = np.nan
-                self.seI_sim = np.nan
-                self.VI_sim = np.nan
-                self.z_sim = np.nan
-                self.p_z_sim = np.nan
+                sim = rlisas = None
+                EI_sim = np.nan
+                seI_sim = np.nan
+                VI_sim = np.nan
+                z_sim = np.nan
+                p_z_sim = np.nan
 
-    def __calc(self, w, z):
+        return z, Is, den, q, p_sim, sim, rlisas, EI_sim, seI_sim, \
+            VI_sim, z_sim, p_z_sim, EIc, VIc, EI, VI
+
+    def __calc(self, w, z, den):
         zl = slag(w, z)
-        return self.n_1 * self.z * zl / self.den
+        return self.n_1 * z * zl / den
 
-    def __quads(self):
-        zl = slag(self.w, self.z)
-        zp = self.z > 0
+    def __quads(self, z):
+        quads = [1, 2, 3, 4]
+        if self.geoda_quads:
+            quads = [1, 3, 2, 4]
+
+        zl = slag(self.w, z)
+        zp = z > 0
         lp = zl > 0
         pp = zp * lp
         np = (1 - zp) * lp
         nn = (1 - zp) * (1 - lp)
         pn = zp * (1 - lp)
-        self.q = (
-            self.quads[0] * pp
-            + self.quads[1] * np
-            + self.quads[2] * nn
-            + self.quads[3] * pn
-        )
+        q = quads[0] * pp + quads[1] * np + quads[2] * nn + quads[3] * pn
+        return q
 
-    def __moments(self):
+    def __moments(self, z):
         W = self.w.sparse
-        z = self.z
         simplefilter("always", sparse.SparseEfficiencyWarning)
         n = self.n
         m2 = (z * z).sum() / n
@@ -1103,8 +1163,8 @@ class Moran_Local(object):
             * (m2 - (z ** 2 / (n - 1)))
         )
 
-        self.EIc = expectation
-        self.VIc = variance
+        EIc = expectation
+        VIc = variance
         # ---------------------------------------------------------
         # Total randomization null, Sokal 1998, Eqs. A3 & A4*
         # ---------------------------------------------------------
@@ -1118,66 +1178,13 @@ class Moran_Local(object):
         # variance_anselin = (wi2 * (n - b2)/(n-1)
         #        + 2*wikh*(2*b2 - n) / ((n-1)*(n-2))
         #                    - wi**2/(n-1)**2)
-        self.EI = expectation
-        self.VI = (
+        EI = expectation
+        VI = (
             wi2 * (n - b2) / (n - 1)
             + (wi ** 2 - wi2) * (2 * b2 - n) / ((n - 1) * (n - 2))
             - (-wi / (n - 1)) ** 2
         )
-
-    @property
-    def _statistic(self):
-        """More consistent hidden attribute to access ESDA statistics"""
-        return self.Is
-
-    @classmethod
-    def by_col(
-        cls, df, cols, w=None, inplace=False, pvalue="sim", outvals=None, **stat_kws
-    ):
-        """
-        Function to compute a Moran_Local statistic on a dataframe
-
-        Parameters
-        ----------
-        df          :   pandas.DataFrame
-                        a pandas dataframe with a geometry column
-        cols        :   string or list of string
-                        name or list of names of columns to use to compute the statistic
-        w           :   pysal weights object
-                        a weights object aligned with the dataframe. If not provided, this
-                        is searched for in the dataframe's metadata
-        inplace     :   bool
-                        a boolean denoting whether to operate on the dataframe inplace or to
-                        return a series contaning the results of the computation. If
-                        operating inplace, the derived columns will be named
-                        'column_moran_local'
-        pvalue      :   string
-                        a string denoting which pvalue should be returned. Refer to the
-                        the Moran_Local statistic's documentation for available p-values
-        outvals     :   list of strings
-                        list of arbitrary attributes to return as columns from the
-                        Moran_Local statistic
-        **stat_kws  :   keyword arguments
-                        options to pass to the underlying statistic. For this, see the
-                        documentation for the Moran_Local statistic.
-
-        Returns
-        --------
-        If inplace, None, and operation is conducted on dataframe in memory. Otherwise,
-        returns a copy of the dataframe with the relevant columns attached.
-
-        """
-        return _univariate_handler(
-            df,
-            cols,
-            w=w,
-            inplace=inplace,
-            pvalue=pvalue,
-            outvals=outvals,
-            stat=cls,
-            swapname=cls.__name__.lower(),
-            **stat_kws
-        )
+        return EIc, VIc, EI, VI
 
 
 class Moran_Local_BV(object):

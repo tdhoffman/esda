@@ -192,7 +192,7 @@ class Moran(object):
             self.VI_sim = self.seI_sim ** 2
             self.z_sim = (self.I - self.EI_sim) / self.seI_sim
             if self.z_sim > 0:
-               self.p_z_sim = 1 - stats.norm.cdf(self.z_sim)
+                self.p_z_sim = 1 - stats.norm.cdf(self.z_sim)
             else:
                 self.p_z_sim = stats.norm.cdf(self.z_sim)
 
@@ -567,7 +567,8 @@ def Moran_BV_matrix(variables, w, permutations=0, varnames=None):
         import pandas
 
         if isinstance(variables, pandas.DataFrame):
-            # if yes use variables as df and convert to numpy_array varnames = pandas.Index.tolist(variables.columns)
+            # if yes use variables as df and convert to numpy_array
+            varnames = pandas.Index.tolist(variables.columns)
             variables_n = []
             for var in varnames:
                 variables_n.append(variables[str(var)].values)
